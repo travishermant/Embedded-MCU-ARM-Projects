@@ -1,0 +1,75 @@
+@Travis Hermant
+@ECE372, Design Project 1
+@Part 2 Low Level Algorithm
+
+INTIALIZATION:
+	Turn on TIMER3 clock
+		Write 0x02 to CLKCTRL at 0x44E00084 
+		Write 0x02 to PRCMCLKSEL_TIMER3 at 0x44E0050C to select 32KHz
+	
+	Unmask TIMER3 interrupt
+		Write #0x20 to 0x482000C8
+		
+	Initialize TIMER3 registers
+		Write 0x1 to CFG at 0x48042010 to reset timer (have to step through)
+		Write 0x2 to IRQENABLE_SET at 0x4804202C to enable overflow irq
+		Load 0xFFFB0000 into TLDR and TCRR
+			TLDR at 0x48042040, TCRR at 0x4804203C
+			
+	Write #0 to R9 and R8
+
+INT_DIRECTOR:
+	No changes
+	
+UART_CHECK:
+	Compare 0x20 to INTC_PENDING_IRQ2 to see if it was a TIMER3 interrupt
+		BEQ to TCHK, interrupt was from TIMER3
+	No other changes
+	
+TCHK:
+	Compare 0x2 to 0x48042028 to see if interrupt was an overflow
+		BEQ to TIMER, since it was an overflow interrupt
+	Otherwise branch to PASS_BACK
+	
+TIMER:
+	Turn off TIMER3 int request
+		Write 0x2 to 0x48042028
+	Enable INT for next IRQ
+		Write #01 to 0x48200048
+	Compare R9 to #1
+		BEQ to DONT_TALK, as button was pressed while timer was running
+		Otherwise button wasn't pressed during timer and R9 = 0
+			Write 0xA to 0x48024004 to enable UART2 interrupts
+			
+DONT_TALK:
+	Write #0 to R8, since timer is now stopped and the message wont be spoken
+		This will make it so the next press starts it back up
+	Branch to PASS_BACK
+	
+BUTTON_SVC:
+	(After interrupts turned off) Compare R8 to #1
+		BEQ to BUTTON_SVC2, since timer is running we want to stop the next message
+		Otherwise write #0 to R9 and enable UART2 interrupts
+
+BUTTON_SVC2:
+	Disable UART2 interrupts
+		Write 0x0 to 0x48024004
+	Write #1 to R9, write #0 to R8
+		Button was pressed while timer was running, so R8 needs to be reset 
+	Disable TIMER3 interrupt
+		Write 0x2 to 0x48042030
+	Branch to PASS_BACK
+	
+CHAR_END:
+	(After UART2 is disabled)
+	Reinitialize TIMER3 registers
+		Write 0x1 to CFG at 0x48042010 to reset timer (have to step through)
+		Write 0x2 to IRQENABLE_SET at 0x4804202C to enable overflow irq
+		Load 0xFFFB0000 into TLDR and TCRR
+			TLDR at 0x48042040, TCRR at 0x4804203C
+	Reset timer and start the countdown (or count up)
+		Write 0x01 to 0x48042038
+	
+	Write #1 to R8, since timer is now running
+	Prep CPU for another interrupt
+	Fall into PASS_BACK

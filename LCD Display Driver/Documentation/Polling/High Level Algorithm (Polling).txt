@@ -1,0 +1,73 @@
+Travis Hermant
+ECE372, Design Project 2 Part 1
+High Level Algorithm
+
+Initialization:	
+	Turn on I2C clock
+	Change pin modes for I2C1, set slew rate, disable pullup/down
+	Put I2C1 into reset
+	Divide 48MHz clock by 4 to get 12MHz
+	Set data rate to 100KB/s
+	Configure I2C1 address
+	Take I2C1 out of reset, enable transmission and master modes
+	Set number of command bytes (0x0A) to be sent
+	Configure I2C1 slave address
+	Clear interrupts that will be checked later (XRDY,BB,ARDY)
+
+Sending the commands:
+	Branch link to BB_POLL
+	Branch link to RESTART
+	Reset register for indexing command array
+	Branch to SEND_INSTRUCTIONS
+	
+SEND_INSTRUCTIONS:
+	@Throw in a Branch Link to WAIT before basically anything happens
+	Branch Link to XRDY_POLL
+	Load pointer to instructions data
+		Load one byte using index register as offset
+		Increment index register
+	Store the byte into the I2C1_DATA register to be transferred
+	Branch Link to XRDY_CLEAR
+	Test ARDY to see if there are more bytes to be sent
+		If there is, branch back to beginning
+	@Prep for sending data
+	Set number of data bytes to be sent (0x0F)
+	Branch Link to BB_POLL
+	Branch Link to RESTARt
+	Reset index register for sending the data
+	Head to SEND_MESSAGE
+	
+SEND_MESSAGE:
+	@Throw in a Branch Link to WAIT before basically anything happens
+	Branch Link to XRDY_POLL
+	Load pointer to message data
+		Load one byte using index register as offset
+		Increment index register
+	Branch Link to XRDY_CLEAR
+	Test ARDY to see if there are more bytes to be sent
+		If there is, branch back to beginning
+	Branch Link to QUIT (same as restart, probably not needed)
+	Branch to ENDLESS_LOOP because theres nothing else to be done
+BB_POLL:
+	Keep looping until the BB bit goes high in IRQSTATUS_RAW, then pop back
+
+XRDY_POLL:
+	Keep looping until the XRDY bit goes high in IRQSTATUS_RAW, then pop back
+
+XRDY_CLEAR:	
+	Just write a 1 to the XRDY bit in IRQSTATUS_RAW to clear it, pop back
+
+RESTART:
+	Query a start and stop condition
+
+ENDLESS_LOOP:	
+	Just keeps branching to ENDLESS_LOOP
+	
+WAIT:
+	Loads a value of 0x2000 (just randomly chosen value)
+	Heads to WAITLOOP where it will decrement and keep looping until zero
+		After it's zero it will pop off and return
+	
+
+
+	

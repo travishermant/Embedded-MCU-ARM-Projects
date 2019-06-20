@@ -1,0 +1,362 @@
+@Travis Hermant
+@ECE372 Design Project 1, part 2 FINISHED
+@Has two status registers, R8 and R9
+@R8 is high if timer is going, low if timer isn't. 
+@R9 is high if button was pressed while timer was going, low if it wasn't.
+.EQU MESSAGE_LEN, 50
+
+.text
+.global _start
+.global INT_DIRECTOR
+_start:
+
+@Create stack for each mode, revert back to SVC
+LDR R13,=STACK1
+ADD R13,R13,#0x1000
+CPS #0x12						@	Switch to IRQ mode
+LDR R13,=STACK2
+ADD R13,R13,#0x1000
+CPS #0x13						@	Switch to SVC mode
+
+
+@Turn on module GPIO1 for button
+MOV R0,#0x02
+LDR R1,=0x44E000AC
+STR R0,[R1]
+@Turn on UART2 clock
+LDR R1,=0x44E00070
+STR R0,[R1] 
+@Turn on Timer3 CLK
+MOV R2,#0x02					@Enable timer3 CLK
+LDR R1,=0x44E00084				@Address of timer3 clkctrl
+STR R2,[R1]						@Turn on
+LDR R1,=0x44E0050C				@Address of PRCMCLKSEL_TIMER3
+STR R2,[R1]						@Select 32KHz for timer3
+
+@Turn on falling edge check for GPIO1_30, the button location
+LDR R0,=0x4804C000				@	GPIO1 base address
+ADD R1,R0,#0x14C				@	Add offset for GPIO1_FALLINGDETECT
+MOV R2,#0X40000000				@	Select bit 30
+LDR R3,[R1]						@READ
+ORR R3,R3,R2					@MODIFY
+STR R3,[R1]						@WRITE
+ADD R1,R0,#0X34					@Enable GPIO request on POINTRPEND1 for button
+STR R2,[R1]
+
+@Enable interrupts
+LDR R0,=0x48200000
+
+@Reset INTC
+ADD R1,R0,#0x20
+MOV R2,#0x2
+STR R2,[R1]
+@Enable button interrupts
+ADD R1,R0,#0xE8				@Bit 3 of INTC_MIR_CLEAR3
+MOV R2,#0x04
+STR R2,[R1]
+@Unmask UART interrupts
+ADD R1,R0,#0xC8				@Bit 10 of INTC_MIR_CLEAR2
+MOV R2,#0x400
+STR R2,[R1]
+@Unmask INT 69, Timer3 interrupt
+MOV R2,#0x20
+STR	R2,[R0,#0xC8]				
+
+
+
+@Map the UART2 pins
+@	CTSN is 0x44E108C0,RTSN is 0x44E10824, MODE 6
+@	CTSN is an input, RTSN is an output
+@	RXD is 0x44E10954, TXD IS 0x44310950, MODE 1
+@	RXD is an input, TXD is an output
+
+LDR R0,=0x44E10000
+
+@RTSN
+LDR R1,=0x8C4
+ADD R2,R1,R0
+MOV R3,#0x6
+STR R3,[R2]
+
+@CTSN
+LDR R1,=0x8C0
+ADD R2,R1,R0
+MOV R3,#0x16
+STR R3,[R2]
+
+@TXD
+LDR R1,=0x954
+ADD R2,R1,R0
+MOV R3,#0x1
+STR R3,[R2]
+
+@RXD
+LDR R1,=0x950
+ADD R2,R1,R0
+MOV R3,#0x11
+STR R3,[R2]
+
+
+@Set UART Baud rate to 300bps
+LDR R0,=0x48024000
+
+@Switching to config mode A
+ADD R1,R0,#0x0C
+MOV R2,#0x83
+STRB R2,[R1]		
+		
+ADD R1,R0,#0x4			@Writing 0x27 to DLH
+MOV R2,#0x27
+STRB R2,[R1]				
+			
+MOV R2,#0x10			@Writing 0x10 to DLL
+STRB R2,[R0]
+
+ADD R1,R0,#0x20			@Writing 0x00 to MDR1
+MOV R2,#0x00
+STRB R2,[R1]
+
+@Switching back to operation mode	
+ADD R1,R0,#0x0C
+MOV R2,#0x03
+STRB R2,[R1]
+
+@Disabling FIFO at offset 8h, write 110 individually
+@Clear TX
+ADD R1,R0,#0x8
+MOV R2,#0x4
+STR R2,[R1]
+@Clear RX
+MOV R2,#0x2
+STR R2,[R1]
+@Disable FIFO
+MOV R2,#0x0
+STR R2,[R1]
+
+
+@Initialize Timer3 registers
+LDR R1,=0x48042000			@Base address for timer3 registers
+MOV R2,#0x1					@Reset timer3
+STR R2,[R1,#0x10]			@Write to Timer3 CFG register
+MOV R2,#0x2					@Enable overflow interrupt
+STR R2,[R1,#0x2C]			@Write to Timer3 IRQENABLE_SET
+LDR R2,=0xFFFB0000			@Count for 1 second
+STR R2,[R1,#0x40]			@Timer3 TLDR load register
+STR R2,[R1,#0x3C]			@Timer3 TCRR counter register, will add up to 1 second
+
+@IRQ enable
+MRS R3,CPSR
+BIC R3,#0x80
+MSR CPSR_c, R3
+
+MOV R9,#0					@Flag for button being pressed while timer is running
+MOV R8,#0					@Flag for indicating if the timer is running
+
+B ENDLESS_LOOP
+
+ENDLESS_LOOP:
+	MRS R3,CPSR
+	BIC R3,#0x80
+	MSR CPSR_c, R3
+	NOP
+	B ENDLESS_LOOP
+
+
+@INTC_PENDING_IRQ2 0xD8, bit #0x400, for INT_DIRECTOR
+
+
+INT_DIRECTOR:
+	STMFD SP!, {R0-R3, LR}
+		
+	LDR R0,=0x482000F8		@INTC_PENDING_IRQ3
+	LDR R1,[R0]
+	TST R1,#0x00000004
+	BEQ UART_CHECK
+	
+	LDR R0,=0x4804C02C		@Read GPIO1_IRQSTATUS_0
+	LDR R1,[R0]
+	TST R1,#0x40000000		@Test to see if button is pressed, bit 30 = 1
+	BNE BUTTON_SVC			@	Button pushed
+	B PASS_BACK			@	Button not pushed
+	
+UART_CHECK:
+	@Check if timer sent the interrupt
+	LDR R1,=0x482000D8		@INTC_PENDING_IRQ2
+	LDR R0,[R1]
+	CMP R0,#0x20			@Check interrupt from Timer3, R8 reversed
+	BEQ TCHK
+	@Check IIT bit of IIR_UART2
+	LDR R0,=0x48024000
+	ADD R1,R0,#0x8
+	LDR R2,[R1]
+	TST	R2,#0x00000001
+	BEQ TALKER_SVC			@If it's 0 then head to TALKER_SVC
+	LDR R0,=0x48200048 
+	MOV R1,#0x1				@Clear bit 0 of INTC_CONTROL register
+	STR R1,[R0]
+	B PASS_BACK
+	
+TCHK:	
+	LDR R1,=0x48042028
+	LDR R0,[R1]
+	CMP R0,#0x2				@Check if interrupt from overflow
+	BEQ TIMER				@	If it is, head to timer procedure, if not fall into PASS_BACK
+	B PASS_BACK
+
+TIMER:
+	LDR R1,=0x48042028			@Turn off Timer3 int request, enable INTC for next IRQ
+	MOV R2,#0x2
+	STR R2,[R1]
+	MOV R10,#1
+	LDR R0,=0x48200048			@INTC_CONTROL register address
+	MOV R1,#01					@Clear bit 0
+	STR R1,[R0]
+	
+	CMP R9,#1					@If R9 = 1 that means the button was pressed while the timer was running
+	BEQ DONT_TALK
+	
+	LDR R0,=0x48024004			@Address for IER_UART2
+	MOV R1,#0xA					@Bit 1 enables THR, bit 3 enables MODEM change int
+	STR R1,[R0]
+	
+	B PASS_BACK	
+DONT_TALK:
+	MOV R8,#0					@R8 = 0, the timer is stopped and message wont be read, heading to wait loop
+	B PASS_BACK		
+BUTTON_SVC:
+	MOV R1,#0x40000000			@Turn off interrupt request
+	STR R1,[R0]
+	LDR R0,=0x48200048			@INTC control address
+	MOV R1,#01
+	STR R1,[R0]
+	
+	CMP R8,#1					@Timer is running so the button is going to stop the talking
+	BEQ BUTTON_SVC2
+	
+	MOV R9,#0					@Timer isn't running so button press was startig it up, R9 is set to 0
+	
+	LDR R0,=0x48024004			@Address for IER_UART2
+	MOV R1,#0xA					@Bit 1 enables THR, bit 3 enables MODEM change int
+	STR R1,[R0]
+
+	B PASS_BACK
+	
+	
+BUTTON_SVC2:
+@BUTTON_SVC2 handles the button after it has been pressed to start talking
+@It will disable UART2 interrupts and disable timer3 interrupts
+	LDR R0,=0x48024004			@Address of IER of UART2
+	MOV R1,#0x0					@Disable MODEM and THR interrupts, will be reeanabled when button is pressed again
+	STR R1,[R0]					@Store back into MCR		
+	
+	MOV R9,#1					@R9 is set to 1 meaning button was pressed while timer was running
+	MOV R8,#0					@Now the timer wont be running so R8 is 0
+	
+	LDR R1,=0x48042030			@Disable timer interrupt so that the timer doesn't go off while in the endless loop
+	MOV R2,#0x2					@	and cause it to ignore the next button press
+	
+	B PASS_BACK	
+TALKER_SVC:	
+	
+	LDR R0,=0x48024000
+	ADD R1,R0,#0x18				@MSR is at offset 18h
+	LDR R2,[R1]
+	TST R2,#0x00000010
+	BEQ NOCTS					@CTS# ISN'T ASSERTED
+	
+	ADD R1,R0,#0x14				@LSR is at offset 14h
+	LDR R2,[R1]
+	TST R2,#0x00000020			@CHECK THR is asserted
+	BNE SEND_CHAR
+	B PASS_BACK					@THR isn't asserted so dont send char
+	
+	
+NOCTS:
+	@Checking if THR in LSR is asserted or not, after finding CTS# is not
+	ADD R1,R0,#0x14				@LSR is at offset 14h
+	LDR R2,[R1]
+	TST R2,#0x00000020			@CHECK THR is asserted
+	
+	BEQ PASS_BACK				@If it's not asserted then head back to wait loop
+	ADD R1,R0,#0x04				@Otherwise it is asserted and we need to clear it
+	MOV R2,#0xFD				@Bit 1 is THR and we need to make it low
+	STRB R2,[R1]	
+	
+	B PASS_BACK
+	
+SEND_CHAR:
+	LDR R1,=CHAR_PTR
+	LDR R2,[R1]					@Load address of the character to send
+	LDR R3,=CHAR_COUNT
+	LDR R4,[R3]					@Get count value
+	LDRB R5,[R2],#1				@Grab char from string, then increment by 1
+	STR R2,[R1]
+	
+	LDR R6,=0x48024000			@Getting address of THR
+	STRB R5,[R6]				@Storing character to be sent in THR
+	SUBS R4,R4,#1				@Decrement char count by 1 to see if you're at the end
+	STR R4,[R3]	
+	BPL PASS_BACK				@Otherwise, passback
+	B CHAR_END					@If count is zero, you've hit the end of message
+
+	
+CHAR_END:	
+	LDR R4,=MESSAGE				@Address to start of message string
+	STR R4,[R1]					@Store address in char pointer
+	MOV R4,#MESSAGE_LEN			@Reload char count
+	STR R4,[R3]				
+	LDR R0,=0x48024004			@Address of IER of UART2
+	MOV R1,#0x0					@Disable MODEM and THR interrupts, will be reeanabled when button is pressed again
+	STR R1,[R0]					@Store back into MCR
+	
+	LDR R1,=0x48042000			@Base address for timer3 registers
+	MOV R2,#0x2					@Enable overflow interrupt
+	STR R2,[R1,#0x2C]			@Write to Timer3 IRQENABLE_SET
+	LDR R2,=0xFFFB0000			@Count for 10 seconds
+	STR R2,[R1,#0x40]			@Timer3 TLDR load register
+	STR R2,[R1,#0x3C]			@Timer3 TCRR counter register, will add up to 10 seconds	
+	LDR R1,=0x4804202C			@Enable overflow interrupt
+	MOV R2,#0x2
+	STR R2,[R1]
+	
+	MOV R2,#0x01				@Reset timer and start
+	LDR R1,=0X48042038
+	STR R2,[R1]
+	
+	MOV R8,#1					@R8 at 1 means the timer is started
+	@Prep for timer interrupt
+	MRS R3,CPSR
+	BIC R3,#0x80
+	MSR CPSR_c, R3
+	
+PASS_BACK:
+	LDMFD SP!, {R0-R3,LR}		@Pop the registers and head back to next instruction
+	SUBS PC,LR,#4
+
+
+
+
+@SYS_IRQ: .word 0
+.data
+.align 4
+MESSAGE:
+.byte 0x0D
+.ascii "your blood pressure is 120 over 70"
+.byte 0x0D
+.align 4
+
+
+CHAR_PTR:
+.word MESSAGE
+
+CHAR_COUNT:
+.word 50				@Number of characters to send in message, and 0xD at beginning and end
+
+STACK1:		.rept 1024
+		.word 0x0000
+		.endr
+STACK2:		.rept 1024
+		.word 0x0000
+		.endr
+
+.END

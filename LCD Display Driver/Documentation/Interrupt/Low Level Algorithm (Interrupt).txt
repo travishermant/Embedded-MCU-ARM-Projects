@@ -1,0 +1,114 @@
+Travis Hermant
+ECE372, Design Project 2 Part 2
+High Level Algorithm changes from part 1
+
+Initialization:
+	Turn on I2C clock
+		Write 0x02 to 0x44E00048
+	Change pin modes for I2C1, set slew rate, disable pullup/down
+		Write 0x6A to 0x44E1095C and 0x44E10958
+	Put I2C1 into reset
+		Write 0x02 to 0x4802A010
+	Divide 48MHz clock by 4 to get 12MHz
+		Write 0x03 to 0x4802A0B0
+	Set data rate to 100KB/s
+		Write 0x35 to 0x4802A0B4
+		Write 0x37 to 0x4802A0B8
+	Configure I2C1 address
+		Write 0x00 to 0x4802A0A8
+	Take I2C1 out of reset, enable transmission and master modes
+		Write 0x8600 to 0x4802A0A4
+	Set number of command bytes (0x0A) to be sent
+		Write 0x0A to 0x4802A098
+	Configure I2C1 slave address
+		Write 0x3C to 0x4802A0AC
+	Enable IRQs
+		Write 0x10 to 0x4802A02C
+	Clear interrupts that will be checked later (XRDY,BB,ARDY)
+		Write 0x1014 to 0x4802A028
+	Reset INTC
+		Write 0x20 to 0x48200020
+	Unmask I2C1INT interrupts
+		Write 0x80 to 0x482000C8
+		
+Sending the commands:
+	Branch link to RESTART
+	Reset register for indexing command array
+		Write 0x00 to R7 (Being reserved as the index register)
+	Set a register as a flag for INT_DIRECTOR
+		Write 0 to R6
+	Enable IRQ
+		BIC 0x80 in CPSR
+	Branch to ENDLESS_LOOP
+	
+INT_DIRECTOR:
+	Push onto the stack
+	Test XART
+		TST 0x10 at 0x4802A024 
+		If it is, BNE to SEND
+		Else Branch to PASS_BACK
+
+SEND:
+	Check register flag
+		CMP R6 to 0
+			If it's zero, BEQ to SEND_INSTRUCTIONS
+			Else Branch to SEND_MESSAGE
+		
+SEND_INSTRUCTIONS:
+	@Throw in a Branch Link to WAIT before basically anything happens
+	Load pointer to instructions data
+		Load from =INSTRUCTIONS
+		Load one byte using index register as offset
+			Load from =INSTRUCTIONS with R7 as offset
+		Increment index register
+			Add 1 to R7
+	Store the byte into the I2C1_DATA register to be transferred
+		StoreByte to 0x4802A09C
+	Branch Link to XRDY_CLEAR
+	Test ARDY to see if there are more bytes to be sent
+		TST ARDY bit (0x04) in I2C_IRQSTATUS_RAW (0x4802A024)
+		If there is, BEQ back to SEND_INSTRUCTION
+	@Prep for sending data
+	Set number of data bytes to be sent (0x0F)
+		Write 0x0F to 0x4802A098
+	Branch Link to RESTART
+	Reset index register for sending the data
+		Write 0x00 to R7
+	Branch to PASS_BACK
+	
+SEND_MESSAGE:
+	@Throw in a Branch Link to WAIT before basically anything happens
+	Load pointer to message data
+		Load from =MESSAGE
+		Load one byte using index register as offset
+			Load from =MESSAGE with R7 as offset
+		Increment index register
+			Add 1 to R7
+	Branch Link to XRDY_CLEAR
+	Test ARDY to see if there are more bytes to be sent
+		TST ARDY bit (0x04) in I2C_IRQSTATUS_RAW (0x4802A024)
+		If there is, BEQ back to SEND_INSTRUCTION
+	Branch Link to QUIT 
+	Branch to PASS_BACK	
+	
+PASS_BACK:
+	Pop off the stack, return
+		Load SP!, R0-R3 and LR
+		SUBS PC,LR,#4
+	
+XRDY_CLEAR:	
+	Just write a 1 to the XRDY bit in IRQSTATUS_RAW to clear it, pop back
+		Write 0x10 to 0x4802A028
+		MOV PC,R14
+RESTART:
+	Query a start and stop condition
+		Write 0x8603 0x4802A0A4
+
+QUIT:
+	Disable XARTs interrupt
+		WWrite 0x10 to 0x4802A030
+	
+WAIT:
+	Loads a value of 0x2000 (just randomly chosen value)
+	Heads to WAITLOOP where it will decrement and keep looping until zero
+		After it's zero it will pop off and return

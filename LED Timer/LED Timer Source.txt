@@ -1,0 +1,266 @@
+@Travis Hermant
+@ECE 371 Design Project 2 Part 3
+@Cycles through LED phases using a timer, button will interrupt and pause cycling, pressing again will restart it
+@Disabling IRQ-Enable for Timer3 after pushing stack in INT_DIRECTOR, reenabling it after resetting Timer3 registers in Main
+@The idea was that when it's paused and waiting in the loop, the timer isn't going to stop, so I turned off it's ability to make an overflow interrupt
+@Commented out code sections cleaned up
+
+.text
+.global _start
+.global INT_DIRECTOR
+_start:
+
+.EQU ONESECOND, 0x16E360
+.EQU NUM,5
+
+@Create stack for each mode, revert back to SVC
+LDR R13,=STACK1
+ADD R13,R13,#0x1000
+CPS #0x12						@	Switch to IRQ mode
+LDR R13,=STACK2
+ADD R13,R13,#0x1000
+CPS #0x13						@	Switch to SVC mode
+
+
+@Turn on module GPIO1
+LDR R0,=0x02
+LDR R1,=0x44E000AC
+STR R0,[R1]
+
+@INTC
+LDR R1,=0x48200000			@Base address of INTC
+MOV R2,#0x02
+STR R2,[R1,#0x10]			@Reset INTC config register
+MOV R2,#0X04				@	Unmask GPIOINT1A
+STR R2,[R1,#0xE8]				
+MOV R2,#0x20
+STR	R2,[R1,#0xC8]			@Unmask INT 69, Timer3 interrupt
+
+@Turn on Timer3 CLK
+MOV R2,#0x02				@Enable timer3 CLK
+LDR R1,=0x44E00084			@Address of timer3 clkctrl
+STR R2,[R1]				@Turn on
+LDR R1,=0x44E0050C			@Address of PRCMCLKSEL_TIMER3
+STR R2,[R1]				@Select 32KHz for timer3
+
+
+@Set OE to low for pins GPIO1_21 - GPIO1_24
+@	to make them into outputs
+LDR R0,=0xFE1FFFFF			@Loading R0 with all 1's except for bits 21-24
+LDR R1,=0x4804C134			@Loading address of OE for GPIO1
+LDR R2,[R1]				@READ
+AND R2,R2,R0				@MODIFY
+STR R2,[R1]				@WRITE
+
+@Turn on falling edge check for GPIO1_30, the button location
+LDR R0,=0X4804C000			@	GPIO1 base address
+ADD R1,R0,#0x14C			@	Add offset for GPIO1_FALLINGDETECT
+MOV R2,#0X40000000			@	Select bit 30
+LDR R3,[R1]				@READ
+ORR R3,R3,R2				@MODIFY
+STR R3,[R1]				@WRITE
+ADD R1,R0,#0X34				@Enable GPIO request on POINTRPEND1 for button
+STR R2,[R1]
+
+@Initialize Timer3 registers
+LDR R1,=0x48042000			@Base address for timer3 registers
+MOV R2,#0x1				@Reset timer3
+STR R2,[R1,#0x10]			@Write to Timer3 CFG register
+MOV R2,#0x2				@Enable overflow interrupt
+STR R2,[R1,#0x2C]			@Write to Timer3 IRQENABLE_SET
+LDR R2,=0xFFFF8000			@Count for 1 second
+STR R2,[R1,#0x40]			@Timer3 TLDR load register
+STR R2,[R1,#0x3C]			@Timer3 TCRR counter register, will add up to 1 second
+
+MOV R4,#NUM						
+MOV R9,#1				@Value to toggle between lights starting, paused, or not paused
+MOV R10,#0				@Value for timer to break out of endless loop
+
+@IRQ enable
+MRS R3,CPSR
+BIC R3,#0x80
+MSR CPSR_c, R3
+
+B ENDLESS_LOOP
+
+
+
+MAIN:
+	MOV R9,#0
+	MOV R10,#0
+	MRS R3,CPSR			@Ready cpu for new interrupt			
+	BIC R3,#0x80
+	MSR CPSR_c,R3
+	SUBS R4,R4,#1			@Decrement main phase counter to determine which phase to enter
+	CMP R4,#4					
+	BEQ PHASE1			@Branch to phase 1 to light USR0
+	CMP R4,#3
+	BEQ PHASE2			@Branch to phase 2 to light USR0 and USR1
+	CMP R4,#2
+	BEQ PHASE3			@Branch to phase 3 to light USR0 - USR2
+	CMP R4,#1
+	BEQ PHASE4			@Branch to phase 4 to light USR0 - USR3
+	B PHASE5			@If it doesn't enter the previous branches then it has finished all the lighting phases, branching to phase to turn off LEDs
+	
+PHASE1:					@Turn on USR0
+	MOV R5,#0x00200000		@Selecting the 21st bit
+	LDR R6,=0x4804C194		@Loading address of SetDataOut into R6
+	STR R5,[R6]			
+		B WAITLOOP
+PHASE2:
+	MOV R5,#0x00600000		@Turn on USR0 and USR1
+	LDR R6,=0x4804C194
+	STR R5,[R6]
+		B WAITLOOP	
+PHASE3:
+	MOV R5,#0x00E00000		@Turn on USR0 - USR2
+	LDR R6,=0x4804C194
+	STR R5,[R6]
+		B WAITLOOP
+PHASE4:
+	MOV R5,#0x01E00000		@Turn on USR0 - USR3
+	LDR R6,=0x4804C194
+	STR R5,[R6]
+		B WAITLOOP
+PHASE5:
+	MOV R5,#0x01E00000		@Turn off all LEDs
+	LDR R6,=0x4804C190		@Address for clear data out
+	STR R5,[R6]			@Now that its the last phase
+	MOV R4, #NUM			@	Reset main loop counter to go on again
+		B WAITLOOP	
+WAITLOOP:				@Loop to prep timer
+	LDR R1,=0x48042000		@Base address for timer3 registers
+	MOV R2,#0x2			@Enable overflow interrupt
+	STR R2,[R1,#0x2C]		@Write to Timer3 IRQENABLE_SET
+	LDR R2,=0xFFFF8000		@Count for 1 seconds
+	STR R2,[R1,#0x40]		@Timer3 TLDR load register
+	STR R2,[R1,#0x3C]		@Timer3 TCRR counter register, will add up to 1 second
+	
+	LDR R1,=0x4804202C		@Enable overflow interrupt
+	MOV R2,#0x2
+	STR R2,[R1]
+	MRS R3,CPSR			@Ready cpu for new interrupt			
+	BIC R3,#0x80
+	MSR CPSR_c,R3
+	MOV R10,#0
+	MOV R2,#0x01			@Reset timer and start
+	LDR R1,=0X48042038
+	STR R2,[R1]
+
+LOOP:
+	MRS R3,CPSR			@Ready cpu for new interrupt			
+	BIC R3,#0x80
+	MSR CPSR_c,R3
+	CMP R10,#0			@R10 will be changed when the timer throws its interrupt
+	BEQ LOOP			@	will then break out of the loop and branch to MAIN 
+	MOV R10,#0
+	B MAIN
+	
+NOP
+
+INT_DIRECTOR:
+
+	CMP R9,#2			@if it's in the endless loop, R9 will be 2. If that's the case I don't care what the registers are doing in the endless loop	
+	BEQ INT_DIRECTOR2		@	So i'm going to jump here 
+	STMFD SP!, {R0-R3, LR}
+	LDR R0,=0x482000F8		@Store address of INTC-PENDING_IRQ3 into R0
+	LDR R1,[R0]			
+	TST R1,#0x00000004		@Check to make sure it's from GPIONT1A
+	BEQ TCHK
+	LDR R0,=0x4804C02C		@Read GPIO1_IRQSTATUS_0
+	LDR R1,[R0]
+	TST R1,#0x40000000		@Test to see if button is pressed, bit 30 = 1
+	BNE BUTTON_SVC			@	Button pushed
+	BEQ PASS_BACK			@	Button not pushed
+
+INT_DIRECTOR2:
+					@It's otherwise the same as the other INT_DIRECTOR, just doesnt store registers
+					@	Would've kept it in INT_DIRECTOR if there was a conditional STMFD
+	LDR R0,=0x482000F8		@Store address of INTC-PENDING_IRQ3 into R0
+	LDR R1,[R0]			
+	TST R1,#0x00000004		@Check to make sure it's from GPIONT1A
+	BEQ TCHK
+	LDR R0,=0x4804C02C		@Read GPIO1_IRQSTATUS_0
+	LDR R1,[R0]
+	TST R1,#0x40000000		@Test to see if button is pressed, bit 30 = 1
+	BNE BUTTON_SVC			@	Button pushed
+	BEQ PASS_BACK			@	Button not pushed
+
+TCHK:
+	LDR R1,=0x482000D8		@INTC_PENDING_IRQ2
+	LDR R0,[R1]
+	CMP R0,#0x20			@Check interrupt from Timer3, R8 reversed
+	BNE PASS_BACK		
+	LDR R1,=0x48042028
+	LDR R0,[R1]
+	CMP R0,#0x2			@replaced "TST R0,#0x2" with R3. test
+	BEQ TIMER			@BNE TIMER, test
+PASS_BACK:
+	LDR R0,=0x48200048		@INTC_CONTROL register address
+	MOV R1,#01			@Clear bit 0
+	STR R1,[R0]
+	LDMFD SP!, {R0-R3,LR}		@Pop the registers and head back to next instruction
+	SUBS PC,LR,#4
+	
+BUTTON_SVC:
+	MOV R1,#0x40000000		@Turn off interrupt request
+	STR R1,[R0]
+	LDR R0,=0x48200048		@INTC control address
+	MOV R1,#01
+	STR R1,[R0]
+					@Initial button press 
+	CMP R9,#1			@	R9 = 1 is for first button press
+	BEQ MAIN
+					@Starting the pulsing back
+	CMP R9,#2			@	R9 = 2 is for restarting if paused
+	BEQ RESTART
+					@If that fails then enter endless loop for pause
+	MOV R9,#2			@	Since it's heading to the endless loop, prep it for next button press
+	LDR R1,=0x48042030
+	MOV R2,#0x2
+	STR R2,[R1]
+	B ENDLESS_LOOP
+	
+TIMER:
+	LDR R1,=0x48042028		@Turn off Timer3 int request, enable INTC for next IRQ
+	MOV R2,#0x2
+	STR R2,[R1]
+	MOV R10,#1
+	LDR R0,=0x48200048		@INTC_CONTROL register address
+	MOV R1,#01			@Clear bit 0
+	STR R1,[R0]
+	LDMFD SP!,{R0-R3,LR}		@	Restore registers
+	SUBS PC, LR, #4			@	Move to next instruction in pipeline
+	
+RESTART:
+	MRS R3,CPSR				
+	BIC R3,#0x80			
+	MSR CPSR_c, R3				
+	LDR R1,=0x4804202C		@Enable overflow interrupt
+	MOV R2,#0x2
+	STR R2,[R1]
+	MOV R9,#0			@Set R9 so next button press will pause LED's
+	LDMFD SP!,{R0-R3,LR}		@	Restore registers
+	SUBS PC, LR, #4			@	Move to next instruction in pipeline
+		
+ENDLESS_LOOP:
+	MRS R3,CPSR			@Making sure BBB is ready for button push at any point while in this loop
+	BIC R3,#0x80			@	This loop is called from two different locations so I figured I'd just add this in here
+	MSR CPSR_c, R3			@	No timing either so the number of instructions doesn't really matter
+	NOP
+	B ENDLESS_LOOP
+	
+	
+	
+.align 2
+SYS_IRQ: .word 0
+.data
+.align 2
+STACK1:		.rept 1024
+		.word 0x0000
+		.endr
+STACK2:		.rept 1024
+		.word 0x0000
+		.endr
+
+.end

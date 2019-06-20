@@ -1,0 +1,79 @@
+Travis Hermant
+ECE372, Design Project 2 Part 2
+High Level Algorithm changes from part 1
+
+Initialization:
+	Turn on I2C clock
+	Change pin modes for I2C1, set slew rate, disable pullup/down
+	Put I2C1 into reset
+	Divide 48MHz clock by 4 to get 12MHz
+	Set data rate to 100KB/s
+	Configure I2C1 address
+	Take I2C1 out of reset, enable transmission and master modes
+	Set number of command bytes (0x0A) to be sent
+	Configure I2C1 slave address
+	Enable IRQ
+	Clear interrupts that will be checked later (XRDY,BB,ARDY)
+	Reset INTC
+	Unmask I2C1INT interrupts
+
+Sending the commands:
+	Branch link to RESTART
+	Reset register for indexing command array
+	Set a register as a flag for INT_DIRECTOR
+	Enable IRQ
+	Branch to ENDLESS_LOOP
+	
+INT_DIRECTOR:
+	Push onto the stack
+	Test XART
+		If it is, Branch to SEND
+		Else branch to PASS_BACK
+
+SEND:
+	Check register flag
+		If it's zero branch to SEND_INSTRUCTIONS
+		Else branch to SEND_MESSAGE
+		
+SEND_INSTRUCTIONS:
+	@Throw in a Branch Link to WAIT before basically anything happens
+	Load pointer to instructions data
+		Load one byte using index register as offset
+		Increment index register
+	Store the byte into the I2C1_DATA register to be transferred
+	Branch Link to XRDY_CLEAR
+	Test ARDY to see if there are more bytes to be sent
+		If there is, branch back to PASS_BACK
+	@Prep for sending data
+	Set number of data bytes to be sent (0x0F)
+	Branch Link to RESTART
+	Reset index register for sending the data
+	Branch to PASS_BACK
+	
+SEND_MESSAGE:
+	@Throw in a Branch Link to WAIT before basically anything happens
+	Load pointer to message data
+		Load one byte using index register as offset
+		Increment index register
+	Branch Link to XRDY_CLEAR
+	Test ARDY to see if there are more bytes to be sent
+		If there is, branch to PASS_BACK
+	Branch Link to QUIT 
+	Branch to PASS_BACK	
+	
+PASS_BACK:
+	Pop off the stack, return
+	
+XRDY_CLEAR:	
+	Just write a 1 to the XRDY bit in IRQSTATUS_RAW to clear it, pop back
+	
+RESTART:
+	Query a start and stop condition
+
+QUIT:
+	Disable XARTs interrupt
+	
+WAIT:
+	Loads a value of 0x2000 (just randomly chosen value)
+	Heads to WAITLOOP where it will decrement and keep looping until zero
+		After it's zero it will pop off and return

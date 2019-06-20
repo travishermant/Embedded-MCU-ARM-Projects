@@ -1,0 +1,28 @@
+@Part 3 High Level Algorithm
+
+Set up INTC for Timer3
+	INT 69, bit 0x20 of 0x48200000
+Turn on Timer3 clock
+Initialize Timer3 registers
+
+Mainline changes:
+	Reinitalize Timer3 registers
+	Prepare CPU for interrupt
+	Branch to a procedure that leads to an endless loop
+		WAITLOOP procedure will enable Timer3 IRQ and start the timer
+		Will then move to wait LOOP procedure where it waits for timer to finish
+		When interrupt occurs it'll go to INT_DIRECTOR
+		IRQ will branch back to LOOP where the CMP will allow it to exit and return to MAIN
+		
+INT_DIRECTOR:
+	Will store IRQ status in two unused registers
+	Disable interrupt generation from clock's overflow
+		So that Timer3 doesnt have to be turned off and can keep running 
+		without causing another interrupt
+	Branch to tchk procedure if interrupt is from its module
+		Check if interrupt is from Timer3, else pop back to before interrupt
+		Turn off Timer3 interrupt request
+		Check if Overflow interrupt, else pop back to before interrupts
+			Turn off int request, enable INTC for next INT
+			Return to next instruction
+			

@@ -1,0 +1,58 @@
+@Travis Hermant
+@ECE372, Design Project 1
+@Part 2 High Level Algorithm
+
+Most of everything is the same as before, with the addition of timer initialization
+	and updating registers in certain locations to act as flags. I'm just going
+	to list changes that need to be made. Most of this code is my old code
+	
+INTIALIZATION:	
+	Turn on TIMER3 clock
+		Select 32KHz
+	Unmask INT69, bit 5 of IRQ2, so TIMER3 can interrupt
+
+	Initalize TIMER3 register
+		Reset TIMER3 CFG register
+		Enable overflow interrupt
+		Load TLDR and TCRR with 10 second counts, 0xFFFB0000
+	
+	Initialize R9 and R8 to #0
+	
+	Now head to endless loop, which i added the CPU IRQ enable step
+		Probably unecessary
+
+INT_DIRECTOR will remain the same
+
+UART_CHECK
+	Will first check for timer interrupt, if it is then head to TCHK
+		if not continue on like normal
+
+TCHK
+	Will check if the interrupt is from an overflow
+		If it is then it will head to TIMER
+	Otherwise head to PASS_BACK
+TIMER
+	Turn off TIMER3 interrupt, enable INTC for next IRQ
+	Compare R9 to 1	(R9 high means button was pressed while timer was running)
+		If it is, head to DONT_TALK
+	Enable UART2 interrupts
+	Then head to 
+	
+BUTTON_SVC
+	After interrupt request is turned off
+		Compare R8 to #1 to see if timer is running
+			if it is head to new procedure BUTTON_SVC2
+		If not move #0 into R9 since timer wasn't running and enable UART2 interrupt
+		Pop off stack
+BUTTON_SVC2:
+	Disable UART2 interrupts
+	Set R9 to 1, set R8 to 0
+	Disable TIMER3 interrupt
+	PASS_BACK
+
+CHAR_END:
+	After disabling UART2 interrupts
+		Reinitalize TIMER3 by reloading it with 10 seconds and enabling overflow interrupt
+		Reset timer and start it as a one shot
+		Set R8 to 1 to signify that the timer is running
+		Reprep timer for interrupts

@@ -1,0 +1,44 @@
+@Part 3 Low Level Algorithm
+
+@Set up INTC for Timer3
+	Write #0x20 to 0x482000c8 to unmask INT69, timer3
+@Turn on Timer3 clock
+	Write #0x02 to 0x44E00084 to enable CLK
+	Write #0x02 to 0x44E0050C to select 32KHz
+@Initialize Timer3 registers
+	Base address for Timer3 registers is 0x48042000
+	Write #0x1 to offset 0x10 to reset Timer3 CFG
+	Write #0x2 to offset 0x2C (IRQENABLE_SET) to allow overflow int
+	Write =0xFFFF8000 to offset 0x40 and 0x3C to count for 1 second
+
+@Mainline changes:
+	@Reinitalize Timer3 registers
+	@Prepare CPU for interrupt
+	@Branch to a procedure that leads to an endless loop
+		@WAITLOOP procedure will enable Timer3 IRQ and start the timer
+		@Will then move to wait LOOP procedure where it waits for timer to finish
+		@When interrupt occurs it'll go to INT_DIRECTOR
+		@IRQ will branch back to LOOP where the CMP will allow it to exit and return to MAIN
+			Write #0x2 to offset 0x2C (IRQENABLE_SET) to allow overflow int
+			Write =0xFFFF8000 to offset 0x40 and 0x3C to count for 1 second
+			Write #0x01 to =0x48042038 to start a one shot timer
+			Fall into conditional loop that will repeat until timer int
+				R10 will be toggled in IRQ to leave loop and branch to Main
+		
+INT_DIRECTOR:
+	@Branch to tchk procedure if interrupt is from its module
+	Compare #0x4 to INTC_PENDING_IRQ3 (0x482000F8)
+		@Check if interrupt is from Timer3, else pop back to before interrupt
+		Compare #0x20 to PENDING_IRQ2 (0x482000D8)
+		@Turn off Timer3 interrupt request
+		Write 0x2 to =0x48042028
+		@Check if Overflow interrupt, else pop back to before interrupts
+			@Turn off int request, enable INTC for next INT
+			@Return to next instruction
+	@If button is pressed
+		@If button is pressed for a restart
+			@Enable another interrupt to happen
+			@Disable overflow timer interrupt
+				Write 0x02 to 0x4804202C
+			@Pop off of stack
+	

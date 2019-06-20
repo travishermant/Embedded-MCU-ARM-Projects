@@ -1,0 +1,194 @@
+@ Travis Hermant
+@ ECE372, Design Project 2
+@ 3/23/2018
+
+
+.text
+.global _start
+.EQU I2C1_BASE, 0x4802A000
+.EQU CM_PER_BASE, 0x44E00000
+.EQU CONTROL_BASE, 0x44E10000
+
+
+_start:
+
+@Turn on clock for I2C
+	LDR R0,=CM_PER_BASE
+	MOV R2,#0x02
+	STRB R2,[R0,#0x48]			@Offset for I2C1_CLKCTRL
+
+@Change mode for pins to access I2C1
+@Set slew rate and diable pullup and pulldown
+	LDR R0,=CONTROL_BASE
+	MOV R1,#0x6A
+	STRB R1,[R0,#0x958]
+	STRB R1,[R0,#0x95C]
+
+@Put I2C1 into reset
+	LDR R0,=I2C1_BASE
+	STRB R2,[R0,#0x10]			@Offset for I2C_SYSC
+
+@Divide the 48MHz clock by 4 to get 12MHz
+	MOV R1,#0x03				@ 0x03 = divide by 4, since 0x00 is divide by 1
+	STRB R1,[R0,#0xB0]
+
+@Set rate to 100kbps by modifying SCLL and SCLH
+	MOV R1,#0x35
+	STRB R1,[R0,#0xB4]			@Offset for I2C_SCLL
+	MOV R1,#0x37
+	STRB R1,[R0,#0xB8]			@Offset for I2C_SCLH
+	
+@Configure I2C1 address
+	MOV R1,#0x00
+	STRB R1,[R0,#0xA8]			@Offset for I2C_OA
+
+@Take I2C1 out of reset, enable transmission and master modes
+	MOV R1,#0x8600
+	STR R1,[R0,#0xA4]			@Offset for I2C_CON
+
+@Set byte count to be transferred for instructions/commands
+	MOV R1,#0x0A
+	STRB R1,[R0,#0x98]			@Offset for I2C_CNT
+
+@Configure I2C1 slave address
+	MOV R1,#0x3C
+	STRB R1,[R0,#0xAC]			@Offset for I2C_SA
+	
+@Clear interrupts
+	LDR R1,=0x1014				@Clearing XRDY, BB, and ARDY
+	STR R1,[R0,#0x28]			@Offset for IRQ_STATUS
+
+BL BB_POLL
+BL RESTART	
+MOV R2,#0x00					@index for location of instructions
+B SEND_INSTRUCTIONS
+
+
+BB_POLL:
+@Check Bit 12 of I2C_IRQSTATUS_RAW to see if BB has received a start
+	LDR R0,=I2C1_BASE
+	LDR R1,[R0,#0x24]		
+	TST R1,#0x1000				@testing bit 12
+	BNE BB_POLL
+	MOV PC,R14
+	
+XRDY_POLL:
+@Check Bit 4 of I2C_IRQSTATUS_RAW (or not RAW? 0x28) to see if data is requested
+	LDR R0,=I2C1_BASE
+	LDR R1,[R0,#0x24]
+	TST R1,#0x10				@testing bit 4, 0001_0000
+	BEQ XRDY_POLL
+	MOV PC,R14
+	
+SEND_INSTRUCTIONS:
+	BL WAIT
+	BL XRDY_POLL
+	
+	BL WAIT
+	LDR R0,=INSTRUCTIONS		@Set R0 to point to INSTRUCTIONS
+	LDRB R1,[R0,R2]				@Load current value into R1
+	ADD R2,R2,#0x01				@increment index to next location in instructions
+	
+	BL WAIT
+	LDR R0,=I2C1_BASE			@Writing the loaded instruction to I2C1_data
+	STRB R1,[R0,#0x9C]
+	
+	BL WAIT
+	BL XRDY_CLEAR				@Clear XRDY so we aren't stuck in a loop
+	@Check if character was transferred
+	BL WAIT	
+	LDR R1,[R0,#0x24]			@I2C_IRQSTATUS_RAW
+	MOV R3,#0x04				@Mask for ARDY
+	TST R1,R3					@Test ARDY
+	BEQ SEND_INSTRUCTIONS 		@Send more instructions	
+	
+	@Set 17 bytes to be transferred for the message
+	BL WAIT
+	MOV R1,#0x0F 		
+	STRB R1,[R0,#0x98]
+	
+	BL WAIT
+	BL BB_POLL
+	BL WAIT
+	BL RESTART					@Reinitalize the start condition
+	MOV R2,#0x00				@Reset counter for sending the message
+	
+SEND_MESSAGE:	
+	BL WAIT
+	BL XRDY_POLL		
+
+	BL WAIT
+	LDR R0,=MESSAGE				@Load pointer to message data
+	LDRB R1,[R0,R2]				@Load current character
+	BL WAIT
+	ADD R2,R2,#0x01				@Increment index for message data
+	LDR R0,=I2C1_BASE	
+	STRB R1,[R0,#0x9C]			@Write character to I2C_DATA
+	
+	BL WAIT	
+	BL XRDY_CLEAR				@Clear XRDY so we aren't stuck in a loop
+	@Check if character was transferred
+	BL WAIT
+	LDR R1,[R0,#0x24]			@I2C_IRQSTATUS_RAW
+	MOV R3,#0x04				@Mask for ARDY
+	AND R1,R1,R3				@Get ARDY
+	TST R1,R3					@Test ARDY
+	BEQ SEND_MESSAGE
+	BL WAIT
+	BL QUIT
+	B ENDLESS_LOOP
+	
+XRDY_CLEAR:
+	LDR R0,=I2C1_BASE
+	MOV R1,#0x10
+	STRB R1,[R0,#0x28]
+	MOV PC,R14
+
+RESTART:						@Query a start and stop condition
+	LDR R1,=0x8603				@Query a start condition
+	STR R1,[R0,#0xA4]
+	MOV PC,R14
+
+QUIT:							@@@@This one is redundant now
+	LDR R1,=0x8603				@Query a stop condition
+	STR R1,[R0,#0xA4]
+	MOV PC,R14	
+	
+ENDLESS_LOOP:
+	NOP
+	B ENDLESS_LOOP
+WAIT:
+	LDR R4,=0x2000				@Wait is here to give let the New Haven board catch up
+WAIT_LOOP:
+	SUBS R4,R4,#1
+	BNE WAIT_LOOP
+	MOV PC,R14
+	
+.data
+
+@Instructions for ST7036
+.align 4
+INSTRUCTIONS:
+@Comsend, Function set 1, Function set 2, Bias set, Contrast set
+@	Power/ICON/Contrast control, Follower Control, Display on/off control
+@	Clear Display, Entry Mode Set
+	.byte 0x00, 0x38, 0x39, 0x14, 0x78, 0x5E, 0x6D, 0x0F, 0x01, 0x06
+
+
+@Data for displaying the name
+.align 4
+MESSAGE:
+	.byte 0x40		@Datasend
+	.byte 0x54, 0x72, 0x61, 0x76, 0x69, 0x73, 0x20 @ T r a v i s *space*
+	.byte 0x48, 0x65, 0x72, 0x6D, 0x61, 0x6E, 0x74 @ H e r m a n t	
+@Stacks for SVC and IRQ	
+.align 4
+STACK1:	.rept 1024
+		.word 0x0000
+		.endr
+.align 4
+STACK2:	.rept 1024
+		.word 0x0000
+		.endr
+
+.END
